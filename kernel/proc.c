@@ -5,6 +5,8 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+void age_helper();
+void sc_used_helper();
 
 struct cpu cpus[NCPU];
 
@@ -134,6 +136,25 @@ found:
     release(&p->lock);
     return 0;
   }
+  p->swapfile_offset = 0;
+  p->total_pages_in_swapfile = 0;
+  p->in_ram_count = 0;
+  for(int i = 0; i < MAX_TOTAL_PAGES; i++){
+    p->p_pages[i].v_address = 0;
+    p->p_pages[i].swapfile_offset = -1;
+    p->p_pages[i].in_ram = 0;
+    p->p_pages[i].allocated = 0;
+    p->p_pages[i].sc_used = 0;
+    #if (defined(LAPA))
+    p->p_pages[i].age = 0xFFFFFFFF;
+    #else
+    p->p_pages[i].age = 0;
+    #endif
+  }
+  for(int i = 0; i < MAX_PYSC_PAGES; i++){
+    p->swapFile_offset[i] = 1;
+    p->sc_fifo_queue[i] = 0;
+  }
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -143,6 +164,75 @@ found:
 
   return p;
 }
+
+uint select_page_LAPA(){
+    struct proc *p = myproc();
+    int min_ones = -1;
+    int ones_counter=0;
+    int min_ones_index = 0;
+    for(int i=0 ; i<MAX_TOTAL_PAGES ; i++){
+      if(p->p_pages[i].in_ram){
+        ones_counter=0;
+        for(int j=0 ; j<32 ; j++){
+          if((p->p_pages[i].age << j) & 1)
+            ones_counter++;
+        }
+        if(ones_counter < min_ones ){
+          min_ones_index=i;
+          min_ones = ones_counter;
+        } else if(ones_counter == min_ones ){
+            if(p->p_pages[i].age < p->p_pages[min_ones_index].age){
+              min_ones_index=i;
+              min_ones = ones_counter;
+            }
+        }
+      }
+    }
+    return p->p_pages[min_ones_index].v_address;
+}
+
+uint select_page_NFUA(){
+    struct proc *p = myproc();
+    int min_used = -1;
+    int is_first = 0;
+    int min_page_index = 0;
+    for(int i=0 ; i<MAX_TOTAL_PAGES ; i++){
+      if(p->p_pages[i].in_ram){
+        if(is_first || p->p_pages[i].age < min_used){
+          min_used = p->p_pages[i].age;
+          min_page_index = i;
+          is_first = 1;
+        }
+      }
+    }
+    return p->p_pages[min_page_index].v_address;
+}
+
+uint select_page_SCFIFO(){
+    struct proc *p = myproc();
+    int found_page_to_swap = 0;
+    int index_page_to_swap=0;
+    while(!found_page_to_swap){
+      if(p->p_pages[p->sc_fifo_queue[0]].sc_used) {
+        p->p_pages[p->sc_fifo_queue[0]].sc_used = 0;
+        int curr = p->sc_fifo_queue[0];
+        for(int j=1; j< p->in_ram_count ; j++){
+          p->sc_fifo_queue[j-1] = p->sc_fifo_queue[j];
+        }
+        p->sc_fifo_queue[p->in_ram_count-1] = curr;
+      }
+      else{
+        found_page_to_swap = 1;
+        index_page_to_swap=p->sc_fifo_queue[0];
+      }
+    }
+      return p->p_pages[index_page_to_swap].v_address;
+
+}
+
+
+
+
 
 // free a proc structure and the data hanging from it,
 // including user pages.
@@ -155,6 +245,15 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  for(int i = 0; i < MAX_TOTAL_PAGES; i++){
+    p->p_pages[i].v_address = 0;
+    p->p_pages[i].swapfile_offset = 0;
+    p->p_pages[i].in_ram = 0;
+    p->p_pages[i].swapped = 0;
+    p->p_pages[i].allocated = 0;
+  }
+  p->in_ram_count = 0;
+  p->total_pages_in_swapfile = 0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -306,15 +405,40 @@ fork(void)
   pid = np->pid;
 
   release(&np->lock);
+  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
+  if(np->pid > 2){
+    createSwapFile(np);
+    np->swapfile_offset = p->swapfile_offset;
+   // np->swapped_pages_now = p->swapped_pages_now;
+    np->total_pages_in_swapfile = p->total_pages_in_swapfile;
+   // np->page_faults_now = 0;
+    for(int i = 0; i < MAX_TOTAL_PAGES; i++){
+      np->p_pages[i].v_address = p->p_pages[i].v_address;
+      np->p_pages[i].swapfile_offset = p->p_pages[i].swapfile_offset;
+      np->p_pages[i].age = p->p_pages[i].age;
+      np->p_pages[i].allocated = p->p_pages[i].allocated;
+      np->p_pages[i].in_ram = p->p_pages[i].in_ram;
+    }
+    char* page_to_dup = kalloc();
+    for(int j = 0; j < p->total_pages_in_swapfile; j++){
+      uint offset = j*PGSIZE;
+      readFromSwapFile(p, page_to_dup, offset, PGSIZE);
+      writeToSwapFile(np, page_to_dup, offset, PGSIZE);
+    }
+    for(int i = 0; i< MAX_PYSC_PAGES; i++){
+      np->swapFile_offset[i] = p->swapFile_offset[i];
+      np->sc_fifo_queue[i] = p->sc_fifo_queue[i];
+    }
+    kfree(page_to_dup);
+  }
+  #endif
 
   acquire(&wait_lock);
   np->parent = p;
   release(&wait_lock);
-
   acquire(&np->lock);
   np->state = RUNNABLE;
   release(&np->lock);
-
   return pid;
 }
 
@@ -340,6 +464,7 @@ void
 exit(int status)
 {
   struct proc *p = myproc();
+  removeSwapFile(p);
 
   if(p == initproc)
     panic("init exiting");
@@ -365,7 +490,6 @@ exit(int status)
 
   // Parent might be sleeping in wait().
   wakeup(p->parent);
-  
   acquire(&p->lock);
 
   p->xstate = status;
@@ -453,13 +577,60 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        #if (defined(NFUA) || defined(LAPA))
+        age_helper();
+        #endif
+        #if (defined(SCFIFO))
+        sc_used_helper();
+        #endif
         swtch(&c->context, &p->context);
-
+        #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
+        turn_off_PTE_A();
+        #endif
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
       }
       release(&p->lock);
+    }
+  }
+}
+
+
+//Every time tick the process return to the scheduler PTE_A flags
+void turn_off_PTE_A(){
+  struct proc* p = myproc();
+  for(int i = 0; i < MAX_TOTAL_PAGES; i++){
+      if(p->pid > 2 && p->p_pages[i].allocated){
+      pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, p->p_pages[i].allocated);
+      *pte = PA2PTE(p->pagetable) & ~(PTE_A);
+     }
+  }
+}
+
+//If PTE_A is on, we want to return the page to the end of the que
+void sc_used_helper(){
+  struct proc* p = myproc();
+    for(int i = 0; i < MAX_TOTAL_PAGES; i++){
+    if(p->p_pages[i].allocated){
+      pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, 1);
+      if(*pte & PTE_A){
+        p->p_pages[i].sc_used = 1;
+      }
+    }
+  }
+}
+
+
+void age_helper(){
+  struct proc* p = myproc();
+  for(int i = 0; i < MAX_TOTAL_PAGES; i++){
+    if(p->p_pages[i].allocated){
+      uint bit_to_change = 0;
+      pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, 1);
+      if(*pte & PTE_A)
+        bit_to_change = 0x80000000;
+      p->p_pages[i].age = (p->p_pages[i].age >> 1) | bit_to_change;
     }
   }
 }

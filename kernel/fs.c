@@ -775,8 +775,9 @@ createSwapFile(struct proc* p)
   itoa(p->pid, path+ 6);
 
   begin_op();
-  
+
   struct inode * in = create(path, T_FILE, 0, 0);
+
   iunlock(in);
   p->swapFile = filealloc();
   if (p->swapFile == 0)

@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -15,6 +17,7 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
+int get_free_offset();
 // Make a direct-map page table for the kernel.
 pagetable_t
 kvmmake(void)
@@ -217,6 +220,9 @@ uvminit(pagetable_t pagetable, uchar *src, uint sz)
 uint64
 uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 {
+  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
+  struct proc* p = myproc();
+  #endif
   char *mem;
   uint64 a;
 
@@ -225,6 +231,16 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 
   oldsz = PGROUNDUP(oldsz);
   for(a = oldsz; a < newsz; a += PGSIZE){
+
+    #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
+    //check if we exceeded the max page size
+      if((p->pid > 2) && (a >= PGSIZE * MAX_PYSC_PAGES)){
+        int free_offset = get_free_offset();
+        if(free_offset == -1)
+          panic("Exceeded maximum pages");
+        swap_out(free_offset);
+      }
+    #endif
     mem = kalloc();
     if(mem == 0){
       uvmdealloc(pagetable, a, oldsz);
@@ -238,6 +254,67 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
     }
   }
   return newsz;
+}
+
+
+uint select_page(){
+  //struct proc *p = myproc();
+  uint selected_page = 0;
+  #if(defined(NFUA))
+    selected_page = select_page_NFUA();
+  #endif
+  #if(defined(LAPA))
+   selected_page = select_page_LAPA();
+  #endif
+  #if(defined(SCFIFO))
+  selected_page = select_page_SCFIFO();
+  #endif
+  return selected_page;
+}
+
+int get_free_offset(){
+  struct proc *p = myproc(); 
+  for(int i = 0 ; i < MAX_PYSC_PAGES ; i++){
+    if(p->swapFile_offset[i]){
+      return (i*PGSIZE);
+    }
+  }
+  return -1;
+}
+
+
+uint swap_out(uint offset){
+  struct proc* p = myproc();
+ // pte_t *pte;
+  printf("starting to swap out\n");
+  uint address_to_write_from = select_page();
+  address_to_write_from = PGROUNDDOWN(address_to_write_from);
+  char* pa = (char*)walkaddr(p->pagetable, address_to_write_from);
+  printf("before write\n");
+  writeToSwapFile(p, pa, offset, PGSIZE); // write the page in the free space in the swap file
+  printf("finished write\n");
+  int page_index = 0;
+  // get the page address we want to swap
+  while(page_index < MAX_TOTAL_PAGES && p->p_pages[page_index].v_address != address_to_write_from){
+    page_index++;
+  }
+  /** we wrote it in the swap file, now we need to update it in the proc's pages array**/
+  p->p_pages[page_index].swapfile_offset = offset;
+  p->swapFile_offset[(int)offset/PGSIZE] = 0;
+  p->p_pages[page_index].in_ram = 0;
+  p->p_pages[page_index].allocated = 0;
+  p->total_pages_in_swapfile++;
+  p->in_ram_count--;
+
+  
+  uint p_address = walkaddr(p->pagetable, p->p_pages[page_index].v_address);
+  pte_t *pte = walk(p->pagetable, p->p_pages[page_index].v_address, p->p_pages[page_index].allocated);
+  *pte = PA2PTE(p->pagetable) | PTE_PG; // turning on secondary storage flag
+  *pte = PA2PTE(p->pagetable) & ~(PTE_V); // turning off valid flag
+  //kfree((void*)&p->p_pages[page_index].v_address);
+  printf("finished swapping out\n");
+  return (uint64)p_address;
+  //return p->p_pages[i].v_address;
 }
 
 // Deallocate user pages to bring the process size from oldsz to
