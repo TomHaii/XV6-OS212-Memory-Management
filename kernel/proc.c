@@ -140,7 +140,7 @@ found:
   p->total_pages_in_swapfile = 0;
   p->in_ram_count = 0;
   for(int i = 0; i < MAX_TOTAL_PAGES; i++){
-    p->p_pages[i].v_address = 0;
+    p->p_pages[i].v_address = -1;
     p->p_pages[i].swapfile_offset = -1;
     p->p_pages[i].in_ram = 0;
     p->p_pages[i].allocated = 0;
@@ -167,22 +167,22 @@ found:
 
 uint select_page_LAPA(){
     struct proc *p = myproc();
-    int min_ones = -1;
-    int ones_counter=0;
+    int min_ones = 33;
+    int ones_counter = 0;
     int min_ones_index = 0;
-    for(int i=0 ; i<MAX_TOTAL_PAGES ; i++){
+    for(int i = 0;i < MAX_TOTAL_PAGES;i++){
       if(p->p_pages[i].in_ram){
         ones_counter=0;
-        for(int j=0 ; j<32 ; j++){
-          if((p->p_pages[i].age << j) & 1)
+        for(int j = 0;j < 32;j++){
+          if((p->p_pages[i].age >> j) & 1)
             ones_counter++;
         }
-        if(ones_counter < min_ones ){
-          min_ones_index=i;
+        if(ones_counter < min_ones){
+          min_ones_index = i;
           min_ones = ones_counter;
         } else if(ones_counter == min_ones ){
-            if(p->p_pages[i].age < p->p_pages[min_ones_index].age){
-              min_ones_index=i;
+            if(p->p_pages[i].age <= p->p_pages[min_ones_index].age){
+              min_ones_index = i;
               min_ones = ones_counter;
             }
         }
@@ -198,7 +198,7 @@ uint select_page_NFUA(){
     int min_page_index = 0;
     for(int i=0 ; i<MAX_TOTAL_PAGES ; i++){
       if(p->p_pages[i].in_ram){
-        if(is_first || p->p_pages[i].age < min_used){
+        if(!is_first || p->p_pages[i].age <= min_used){
           min_used = p->p_pages[i].age;
           min_page_index = i;
           is_first = 1;
@@ -221,7 +221,7 @@ uint select_page_SCFIFO(){
         }
         p->sc_fifo_queue[p->in_ram_count-1] = curr;
       }
-      else{
+      else {
         found_page_to_swap = 1;
         index_page_to_swap=p->sc_fifo_queue[0];
       }
@@ -409,9 +409,7 @@ fork(void)
   if(np->pid > 2){
     createSwapFile(np);
     np->swapfile_offset = p->swapfile_offset;
-   // np->swapped_pages_now = p->swapped_pages_now;
     np->total_pages_in_swapfile = p->total_pages_in_swapfile;
-   // np->page_faults_now = 0;
     for(int i = 0; i < MAX_TOTAL_PAGES; i++){
       np->p_pages[i].v_address = p->p_pages[i].v_address;
       np->p_pages[i].swapfile_offset = p->p_pages[i].swapfile_offset;
@@ -584,9 +582,7 @@ scheduler(void)
         sc_used_helper();
         #endif
         swtch(&c->context, &p->context);
-        #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
-        turn_off_PTE_A();
-        #endif
+
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
@@ -602,8 +598,8 @@ void turn_off_PTE_A(){
   struct proc* p = myproc();
   for(int i = 0; i < MAX_TOTAL_PAGES; i++){
       if(p->pid > 2 && p->p_pages[i].allocated){
-      pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, p->p_pages[i].allocated);
-      *pte = PA2PTE(p->pagetable) & ~(PTE_A);
+        pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, p->p_pages[i].allocated);
+        *pte &= ~(PTE_A);
      }
   }
 }
@@ -612,7 +608,7 @@ void turn_off_PTE_A(){
 void sc_used_helper(){
   struct proc* p = myproc();
     for(int i = 0; i < MAX_TOTAL_PAGES; i++){
-    if(p->p_pages[i].allocated){
+    if(p->p_pages[i].in_ram){
       pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, 1);
       if(*pte & PTE_A){
         p->p_pages[i].sc_used = 1;
@@ -625,7 +621,7 @@ void sc_used_helper(){
 void age_helper(){
   struct proc* p = myproc();
   for(int i = 0; i < MAX_TOTAL_PAGES; i++){
-    if(p->p_pages[i].allocated){
+    if(p->p_pages[i].in_ram){
       uint bit_to_change = 0;
       pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, 1);
       if(*pte & PTE_A)
@@ -657,6 +653,9 @@ sched(void)
   if(intr_get())
     panic("sched interruptible");
 
+  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
+  turn_off_PTE_A();
+  #endif
   intena = mycpu()->intena;
   swtch(&p->context, &mycpu()->context);
   mycpu()->intena = intena;

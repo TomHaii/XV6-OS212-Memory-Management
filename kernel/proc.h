@@ -118,7 +118,6 @@ struct proc {
 
   struct file *swapFile;
   struct page p_pages[MAX_TOTAL_PAGES];
-  int total_pages_overall;
   int total_pages_in_swapfile;
   int in_ram_count;
   int sc_fifo_queue[MAX_PYSC_PAGES];

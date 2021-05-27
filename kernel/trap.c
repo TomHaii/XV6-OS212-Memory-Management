@@ -68,43 +68,25 @@ usertrap(void)
   #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
   //page fault
   else if(r_scause() == 13 || r_scause() == 15){
-    printf("neta\n");
-    uint va = r_stval();
+    uint va = PGROUNDDOWN(r_stval());
     int found_page_address = 0;
-    //page_to_swap=p->p_pages[0]; //change
-    for(int i = 0; i < MAX_PYSC_PAGES; i++){
+    for(int i = 0; i < MAX_TOTAL_PAGES; i++){
+      printf("virtual page fault %p\n", p->p_pages[i].v_address);
       if(p->p_pages[i].v_address == va){
-
         if(p->in_ram_count == MAX_PYSC_PAGES){
-        #if(defined(SCFIFO))
-        for(int j=0 ; j<MAX_PYSC_PAGES-1 ; j++){
-          p->sc_fifo_queue[j] = p->sc_fifo_queue[j+1];
-        }
-        #endif
           swap_out(p->p_pages[i].swapfile_offset);
         }
-        char * new_page_vaddr = kalloc();
-        //p_page.v_address = new_page_vaddr;
-        readFromSwapFile(p, new_page_vaddr, p->p_pages[i].swapfile_offset,PGSIZE);
-        p->p_pages[i].v_address = (uint64)new_page_vaddr;
-        p->p_pages[i].v_address = PGROUNDDOWN(p->p_pages[i].v_address);    
-        p->p_pages[i].allocated = 1; 
-        p->p_pages[i].in_ram = 1;
-        p->in_ram_count++;
-        #if(defined(SCFIFO))
-        p->sc_fifo_queue[p->in_ram_count-1] = i;
-        #endif
+        uint64 new_page_vaddr = uvmalloc(p->pagetable, va,va + PGSIZE);
+        readFromSwapFile(p, (char*)new_page_vaddr, p->p_pages[i].swapfile_offset,PGSIZE);
         found_page_address = 1;
         pte_t *pte = walk(p->pagetable, p->p_pages[i].v_address, p->p_pages[i].allocated);
-        *pte &= PA2PTE(p->pagetable) & ~(PTE_PG); // turning off secondary storage flag
-        *pte |= PA2PTE(p->pagetable) | PTE_V; // turning on valid flag
-        
+        *pte &= ~(PTE_PG); // turning off secondary storage flag
+        *pte |= PTE_V; // turning on valid flag
         break;
       }
-    } 
+    }
     if(!found_page_address)
-        panic("Illegal address");
-
+        panic("Illegal address in pagefault");
   }
   #endif
   else if((which_dev = devintr()) != 0){
