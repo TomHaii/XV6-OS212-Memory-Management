@@ -67,26 +67,70 @@ usertrap(void)
   }
   #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
   //page fault
-  else if(r_scause() == 13 || r_scause() == 15){
+  else if(r_scause() == 13 || r_scause() == 15 || r_scause() == 12){
     uint va = PGROUNDDOWN(r_stval());
     int found_page_address = 0;
     for(int i = 0; i < MAX_TOTAL_PAGES; i++){
-      printf("virtual page fault %p\n", p->p_pages[i].v_address);
+    //  printf("virtual page fault %p\n", p->p_pages[i].v_address);
       if(p->p_pages[i].v_address == va){
+
         if(p->in_ram_count == MAX_PYSC_PAGES){
-          swap_out(p->p_pages[i].swapfile_offset);
+        // for(int i = 0; i < MAX_TOTAL_PAGES;i++){
+        //   if(p->p_pages[i].in_ram == 1){
+        //     printf("Virtual address in swap file %p offset %d\n", p->p_pages[i].v_address, p->p_pages[i].swapfile_offset);  
+        //   }
+        // }
+  //        printf("ram count %d\n", p->in_ram_count);
+          int free_offset = get_free_swapfile_offset();
+          if(free_offset != -1)
+            swap_out(free_offset);
+          else
+            panic("Swapfile is full");
         }
-        uint64 new_page_vaddr = uvmalloc(p->pagetable, va,va + PGSIZE);
-        readFromSwapFile(p, (char*)new_page_vaddr, p->p_pages[i].swapfile_offset,PGSIZE);
+        pte_t *pte = walk(p->pagetable,va, 0);
+        if(*pte & PTE_PG){
+          char * p_address = kalloc();
+          p->p_pages[i].v_address = va;
+          p->p_pages[i].in_ram = 1; 
+          p->p_pages[i].allocated = 1;
+          #if (defined(LAPA))
+          p->p_pages[i].age = 0xFFFFFFFF;
+          #else
+          p->p_pages[i].age = 0;
+          #endif
+          p->sc_fifo_queue[p->in_ram_count] = i;
+          p->in_ram_count++;
+          // sfence_vma();
+          printf("Turning valid flag on and secondary flag off for %p\n", p->p_pages[i].v_address);
+          *pte &= ~(PTE_PG); // turning off secondary storage flag
+          *pte |= PTE_V; // turning on valid flag
+          readFromSwapFile(p, p_address, p->p_pages[i].swapfile_offset,PGSIZE);
+        }
+        else {
+          uvmalloc(p->pagetable, va,va + PGSIZE);
+          //char* pa = (char*)walkaddr(p->pagetable, va);
+          //readFromSwapFile(p, pa, p->p_pages[i].swapfile_offset, PGSIZE);
+        }
+        p->swapFile_offset[(int)(p->p_pages[i].swapfile_offset/PGSIZE)] = 1;
+        p->p_pages[i].swapfile_offset = -1;
+        //char* pa = (char*)walkaddr(p->pagetable, va);
+      //  printf("starting to read va %p\n", va);
+        //readFromSwapFile(p, pa, p->p_pages[i].swapfile_offset,PGSIZE);
+        //printf("finished to read \n");
+
         found_page_address = 1;
-        pte_t *pte = walk(p->pagetable, p->p_pages[i].v_address, p->p_pages[i].allocated);
-        *pte &= ~(PTE_PG); // turning off secondary storage flag
-        *pte |= PTE_V; // turning on valid flag
+
+
+        // pte_t *pte = walk(p->pagetable, p->p_pages[i].v_address, p->p_pages[i].allocated);
+        // *pte &= ~(PTE_PG); // turning off secondary storage flag
+        // *pte |= PTE_V; // turning on valid flag
         break;
       }
     }
-    if(!found_page_address)
+    if(!found_page_address){
+        printf("va %p\n", va);
         panic("Illegal address in pagefault");
+    }
   }
   #endif
   else if((which_dev = devintr()) != 0){

@@ -17,7 +17,7 @@ extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
 
-int get_free_offset();
+int get_free_swapfile_offset();
 // Make a direct-map page table for the kernel.
 pagetable_t
 kvmmake(void)
@@ -167,11 +167,19 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 {
   uint64 a;
   pte_t *pte;
-
+  struct proc* p = myproc();
   if((va % PGSIZE) != 0)
     panic("uvmunmap: not aligned");
 
+  int i = -1;
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
+    for(i = 0; i < MAX_TOTAL_PAGES; i++){
+      if(p->p_pages[i].v_address == a){
+        break;
+      }
+    }
+    if(i == -1)
+      panic("uvmunmap: no such VA");
     if((pte = walk(pagetable, a, 0)) == 0)
       panic("uvmunmap: walk");
     if(((*pte & PTE_V) == 0) && ((*pte & PTE_PG) == 0)){
@@ -181,9 +189,32 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       panic("uvmunmap: not a leaf");
     if(!(*pte & PTE_PG)){
       if(do_free){
+        p->p_pages[i].v_address = -1;
+        int j;
+        for(j = 0; j < MAX_PYSC_PAGES; j++){
+          if(p->sc_fifo_queue[j] == i)
+            break;
+        }
+        for(; j< MAX_PYSC_PAGES-1; j++){
+          p->sc_fifo_queue[j] = p->sc_fifo_queue[j+1];
+        }
+        p->p_pages[i].in_ram = 0;
+        p->p_pages[i].allocated = 0;
+        p->p_pages[i].age = 0;
+        p->p_pages[i].sc_used = 0;
+        p->in_ram_count--;
+    //    *pte &= ~(PTE_PG); // turning off secondary storage flag
+        //*pte &= ~(PTE_V); // turning off valid flag
         uint64 pa = PTE2PA(*pte);
         kfree((void*)pa);
       }
+    }
+    else if(*pte & PTE_PG){
+      *pte &= ~(PTE_PG);
+      p->p_pages[i].v_address = -1;
+      p->p_pages[i].allocated = 0;
+      p->swapFile_offset[(int)(p->p_pages[i].swapfile_offset / PGSIZE)] = 1;
+      p->total_pages_in_swapfile++;
     }
     *pte = 0;
   }
@@ -228,18 +259,17 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   #endif
   char *mem;
   uint64 a;
-
   if(newsz < oldsz)
     return oldsz;
 
   oldsz = PGROUNDUP(oldsz);
   for(a = oldsz; a < newsz; a += PGSIZE){
 
-    #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
+    #ifndef NONE
     //check if we exceeded the max page size
      if((p->pid > 2) && (p->in_ram_count >= MAX_PYSC_PAGES)){
      // if((p->pid > 2) && (a >= PGSIZE*MAX_PYSC_PAGES)){
-        int free_offset = get_free_offset();
+        int free_offset = get_free_swapfile_offset();
         if(free_offset == -1)
           panic("Exceeded maximum pages");
         p->total_pages_in_swapfile++;
@@ -257,7 +287,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
       uvmdealloc(pagetable, a, oldsz);
       return 0;
     }
-    #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
+    #ifndef NONE
     if(p->pid > 2)
     {
       int page_index = 0;
@@ -271,7 +301,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
            page_index++;
         }
       }
-      printf("page index %p\n", p->p_pages[page_index].v_address);
+     // printf("page index %p\n", p->p_pages[page_index].v_address);
       if(page_index >= MAX_TOTAL_PAGES)
         panic("Exceeded number of total pages");
       p->p_pages[page_index].v_address = PGROUNDDOWN(a);
@@ -282,10 +312,11 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
       #else
       p->p_pages[page_index].age = 0;
       #endif
-      p->p_pages[page_index].swapfile_offset = -1;
+     // p->p_pages[page_index].swapfile_offset = -1;
       p->sc_fifo_queue[p->in_ram_count] = page_index;
       p->in_ram_count++;
       pte_t *pte = walk(p->pagetable, p->p_pages[page_index].v_address, p->p_pages[page_index].allocated);
+      printf("Turning valid flag on and secondary flag off for %p\n", p->p_pages[page_index].v_address);
       *pte &= ~(PTE_PG); // turning off secondary storage flag
       *pte |= PTE_V; // turning on valid flag
     }
@@ -298,24 +329,24 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 uint select_page(){
   //struct proc *p = myproc();
   uint selected_page = 0;
-  #if(defined(NFUA))
+  #if (defined(NFUA))
     selected_page = select_page_NFUA();
   #endif
-  #if(defined(LAPA))
+  #if (defined(LAPA))
    selected_page = select_page_LAPA();
   #endif
-  #if(defined(SCFIFO))
+  #if (defined(SCFIFO))
   selected_page = select_page_SCFIFO();
   #endif
   return selected_page;
 }
 
-int get_free_offset(){
+int get_free_swapfile_offset(){
   struct proc *p = myproc(); 
 
   for(int i = 0 ; i < MAX_PYSC_PAGES; i++){
     if(p->swapFile_offset[i]){
-      printf("i * PGSIZE %d\n", i*PGSIZE);
+  //    printf("i * PGSIZE %d\n", i*PGSIZE);
       return (i*PGSIZE);
     }
   }
@@ -330,9 +361,22 @@ void swap_out(uint offset){
  // pte_t *pte;
   uint address_to_write_from = select_page();
   address_to_write_from = PGROUNDDOWN(address_to_write_from);
+  // for(int i = 0; i < MAX_TOTAL_PAGES;i++){
+  //     if(p->p_pages[i].in_ram == 1){
+  //             char* pap = (char*)walkaddr(p->pagetable, p->p_pages[i].v_address);
+  //         printf("physical mem %p\n",pap);  
+  //     }
+  // }
   char* pa = (char*)walkaddr(p->pagetable, address_to_write_from);
-  char *pap = 
+  //pte_t* pap = walk(p->pagetable, address_to_write_from, 1);
+  // for(int i = 0; i < MAX_TOTAL_PAGES;i++){
+  //   if(p->p_pages[i].in_ram == 0){
+  //     printf("Virtual address in swap file %p offset %d\n", p->p_pages[i].v_address, p->p_pages[i].swapfile_offset);  
+  //   }
+  // }
+  //printf("start write to swap file - offset %d address - %p \n",offset, address_to_write_from);
   writeToSwapFile(p, pa, offset, PGSIZE); // write the page in the free space in the swap file
+  //printf("end write to swap file\n");
   int page_index = 0;
   // get the page address we want to swap
   while(page_index < MAX_TOTAL_PAGES && p->p_pages[page_index].v_address != address_to_write_from){
@@ -341,25 +385,30 @@ void swap_out(uint offset){
   for(int j=1; j< MAX_PYSC_PAGES ; j++){
     p->sc_fifo_queue[j-1] = p->sc_fifo_queue[j];
   }
-  printf("offset %d\n", offset);
+  //printf("offset %d\n", offset);
   p->p_pages[page_index].swapfile_offset = offset;
   p->swapFile_offset[(int)(offset/PGSIZE)] = 0;
   p->p_pages[page_index].in_ram = 0;
   p->p_pages[page_index].allocated = 0;
-  for(int i = 0; i < MAX_TOTAL_PAGES;i++){
-    if(p->p_pages[i].in_ram == 0){
-      printf("Virtual address in swap file %p offset %d\n", p->p_pages[i].v_address, p->p_pages[i].swapfile_offset);  
-    }
-  }
+  // for(int i = 0; i < MAX_TOTAL_PAGES;i++){
+  //   if(p->p_pages[i].in_ram == 0){
+  //     printf("Virtual address in swap file %p offset %d\n", p->p_pages[i].v_address, p->p_pages[i].swapfile_offset);  
+  //   }
+  // }
   p->in_ram_count--;
  // printf("swapfile offset %d\n", (int)offset/PGSIZE);
   
   //uint p_address = walkaddr(p->pagetable, p->p_pages[page_index].v_address);
-  pte_t *pte = walk(p->pagetable, p->p_pages[page_index].v_address, p->p_pages[page_index].allocated);
+  pte_t *pte = walk(p->pagetable, address_to_write_from, 0);
+  
+  printf("Turning valid flag off and secondary flag on for %p\n", p->p_pages[page_index].v_address);
   *pte |= PTE_PG; // turning on secondary storage flag
   *pte &= ~(PTE_V); // turning off valid flag
+  // *pte = PA2PTE(pa) | PTE_PG;
+  // *pte = PA2PTE(pa) & ~(PTE_V);
  // p->p_pages[page_index].v_address = -1;
   kfree((void*)PTE2PA(*pte));
+   sfence_vma();
   //return (uint64)p_address;
   //return p->p_pages[i].v_address;
 }
@@ -371,6 +420,7 @@ void swap_out(uint offset){
 uint64
 uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 {
+  
   if(newsz >= oldsz)
     return oldsz;
 
@@ -421,7 +471,9 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
+  
   pte_t *pte;
+  pte_t *np_pte;
   uint64 pa, i;
   uint flags;
   char *mem;
@@ -429,8 +481,19 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
+      
+    if((*pte & PTE_V) == 0){
+    #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
+      if(!(*pte & PTE_PG))
+        panic("uvmcopy: page not present"); 
+      // paged swapped out be we still want to copy entry
+      if((np_pte = walk(new, i, 1)) == 0)
+        return -1;
+      *np_pte = *pte; 
+      continue;
+    #endif
       panic("uvmcopy: page not present");
+    }
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)

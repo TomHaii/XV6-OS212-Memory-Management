@@ -379,13 +379,14 @@ fork(void)
   if((np = allocproc()) == 0){
     return -1;
   }
-
+  printf("copy user memory form parent to child\n");
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
   }
+  printf("finihsed copy parent memory to child\n");
   np->sz = p->sz;
 
   // copy saved user registers.
@@ -407,8 +408,9 @@ fork(void)
   release(&np->lock);
   #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
   if(np->pid > 2){
+    printf("Creating swapfile in in fork\n");
     createSwapFile(np);
-    np->swapfile_offset = p->swapfile_offset;
+    //np->swapfile_offset = p->swapfile_offset;
     np->total_pages_in_swapfile = p->total_pages_in_swapfile;
     for(int i = 0; i < MAX_TOTAL_PAGES; i++){
       np->p_pages[i].v_address = p->p_pages[i].v_address;
@@ -417,11 +419,16 @@ fork(void)
       np->p_pages[i].allocated = p->p_pages[i].allocated;
       np->p_pages[i].in_ram = p->p_pages[i].in_ram;
     }
+    printf("Starting to copy swapfile in fork\n");
     char* page_to_dup = kalloc();
     for(int j = 0; j < p->total_pages_in_swapfile; j++){
       uint offset = j*PGSIZE;
+      printf("start reading at offset %d\n", offset);
       readFromSwapFile(p, page_to_dup, offset, PGSIZE);
+      printf("finished reading at offset %d\n", offset);
+      printf("started writing at offset %d\n", offset);
       writeToSwapFile(np, page_to_dup, offset, PGSIZE);
+      printf("finished writing at offset %d\n", offset);
     }
     for(int i = 0; i< MAX_PYSC_PAGES; i++){
       np->swapFile_offset[i] = p->swapFile_offset[i];
@@ -597,8 +604,8 @@ scheduler(void)
 void turn_off_PTE_A(){
   struct proc* p = myproc();
   for(int i = 0; i < MAX_TOTAL_PAGES; i++){
-      if(p->pid > 2 && p->p_pages[i].allocated){
-        pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, p->p_pages[i].allocated);
+      if(p->pid > 2 && p->p_pages[i].in_ram){
+        pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, 1);
         *pte &= ~(PTE_A);
      }
   }
@@ -653,9 +660,9 @@ sched(void)
   if(intr_get())
     panic("sched interruptible");
 
-  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
-  turn_off_PTE_A();
-  #endif
+  // #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
+  // turn_off_PTE_A();
+  // #endif
   intena = mycpu()->intena;
   swtch(&p->context, &mycpu()->context);
   mycpu()->intena = intena;
