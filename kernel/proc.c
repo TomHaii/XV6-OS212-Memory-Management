@@ -166,7 +166,14 @@ found:
 }
 
 uint select_page_LAPA(){
+  
     struct proc *p = myproc();
+    // for(int i = 0;i < MAX_TOTAL_PAGES;i++){
+    //   if(p->p_pages[i].in_ram){
+    //     printf("va %p, age %d\n",p->p_pages[i].v_address,p->p_pages[i].age);
+    //   }
+    // }
+    // printf("\n");
     int min_ones = 33;
     int ones_counter = 0;
     int min_ones_index = 0;
@@ -188,29 +195,40 @@ uint select_page_LAPA(){
         }
       }
     }
+   // printf("selected min index %d v address %p\n",min_ones_index,p->p_pages[min_ones_index].v_address);
     return p->p_pages[min_ones_index].v_address;
 }
 
 uint select_page_NFUA(){
     struct proc *p = myproc();
-    int min_used = p->p_pages[0].age;
+    // for(int i = 0;i < MAX_TOTAL_PAGES;i++){
+    //   if(p->p_pages[i].in_ram){
+    //     printf("va %d, age %d\n",p->p_pages[i].v_address,p->p_pages[i].age);
+    //   }
+    // }
+//   printf("\n");
+    int min_used = 0;
     int is_first = 0;
     int min_page_index = 0;
     for(int i=0 ; i<MAX_TOTAL_PAGES ; i++){
       if(p->p_pages[i].in_ram){
-        if(!is_first || p->p_pages[i].age < min_used){
+        if(!is_first || p->p_pages[i].age <= min_used){
           min_used = p->p_pages[i].age;
           min_page_index = i;
           is_first = 1;
         }
       }
     }
-    printf("v address %p\n",p->p_pages[min_page_index].v_address);
+   // printf("selected min index %d v address %p\n",min_page_index,p->p_pages[min_page_index].v_address);
     return p->p_pages[min_page_index].v_address;
 }
 
 uint select_page_SCFIFO(){
     struct proc *p = myproc();
+    // for(int i = 0;i < MAX_PYSC_PAGES;i++){
+    //     printf("va %p, queue index %d second? %d in ram ? %d\n",p->p_pages[p->sc_fifo_queue[i]].v_address,i,p->p_pages[p->sc_fifo_queue[i]].sc_used,p->p_pages[p->sc_fifo_queue[i]].in_ram);
+    // }
+    // printf("\n");
     int found_page_to_swap = 0;
     int index_page_to_swap=0;
     while(!found_page_to_swap){
@@ -227,8 +245,8 @@ uint select_page_SCFIFO(){
         index_page_to_swap=p->sc_fifo_queue[0];
       }
     }
-      printf("v address %p\n",p->p_pages[index_page_to_swap].v_address);
-      return p->p_pages[index_page_to_swap].v_address;
+    //printf("selected min index %d v address %p\n",index_page_to_swap,p->p_pages[index_page_to_swap].v_address);
+    return p->p_pages[index_page_to_swap].v_address;
 
 }
 
@@ -420,19 +438,19 @@ fork(void)
       np->p_pages[i].in_ram = p->p_pages[i].in_ram;
     }
     char* page_to_dup = kalloc();
+    for(int i = 0; i< MAX_PYSC_PAGES; i++){
+      np->swapFile_offset[i] = p->swapFile_offset[i];
+      np->sc_fifo_queue[i] = p->sc_fifo_queue[i];
+    }
     for(int j = 0; j < MAX_PYSC_PAGES; j++){
-      if(p->swapFile_offset[j] == 0){
+      if(np->swapFile_offset[j] == 0){
         uint offset = j*PGSIZE;
         readFromSwapFile(p, page_to_dup, offset, PGSIZE);
         writeToSwapFile(np, page_to_dup, offset, PGSIZE);
         memset((void*)page_to_dup, 0, PGSIZE);
       }
     }
-    for(int i = 0; i< MAX_PYSC_PAGES; i++){
-      np->swapFile_offset[i] = p->swapFile_offset[i];
-      np->sc_fifo_queue[i] = p->sc_fifo_queue[i];
-    }
-    printf("Cleaning physical address1 %p\n", page_to_dup);
+
     kfree(page_to_dup);
   }
   #endif
@@ -444,6 +462,33 @@ fork(void)
   np->state = RUNNABLE;
   release(&np->lock);
   return pid;
+}
+
+
+int init_page_struct(struct proc* p){
+  p->total_pages_in_swapfile = 0;
+  p->in_ram_count = 0;
+#ifndef NONE
+  for(int i=0;i<MAX_TOTAL_PAGES;++i){
+    p->p_pages[i].v_address = -1;
+    p->p_pages[i].in_ram = 0;
+    p->p_pages[i].swapfile_offset = -1;
+    p->p_pages[i].allocated = 0;
+    #if (defined(LAPA))
+    p->p_pages[i].age = 0xFFFFFFFF;
+    #else
+    p->p_pages[i].age = 0;
+    #endif
+#ifdef SCFIFO
+    p->p_pages[i].sc_used = 0;
+#endif
+  }
+  for(int i=0;i<MAX_PYSC_PAGES;++i){
+    p->swapFile_offset[i] = 1;
+    p->sc_fifo_queue[i] = 0;
+  }
+#endif
+  return 0;
 }
 
 // Pass p's abandoned children to init.
@@ -631,14 +676,14 @@ void age_helper(){
   struct proc* p = myproc();
   for(int i = 0; i < MAX_TOTAL_PAGES; i++){
     if(p->p_pages[i].in_ram){
-      uint bit_to_change = 0;
       pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, 1);
       if(*pte & PTE_A)
-        bit_to_change = 0x80000000;
-      p->p_pages[i].age = (p->p_pages[i].age >> 1) | bit_to_change;
+        p->p_pages[i].age = (p->p_pages[i].age >> 1) | 0x80000000;
+      else
+        p->p_pages[i].age = (p->p_pages[i].age >> 1) & ~(0x80000000);
     }
   }
-}
+} 
 
 // Switch to scheduler.  Must hold only p->lock
 // and have changed proc->state. Saves and restores

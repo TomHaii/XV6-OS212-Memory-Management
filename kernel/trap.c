@@ -71,26 +71,19 @@ usertrap(void)
     uint va = PGROUNDDOWN(r_stval());
     int found_page_address = 0;
     for(int i = 0; i < MAX_TOTAL_PAGES; i++){
-    //  printf("virtual page fault %p\n", p->p_pages[i].v_address);
       if(p->p_pages[i].v_address == va){
 
         if(p->in_ram_count == MAX_PYSC_PAGES){
-        // for(int i = 0; i < MAX_TOTAL_PAGES;i++){
-        //   if(p->p_pages[i].in_ram == 1){
-        //     printf("Virtual address in swap file %p offset %d\n", p->p_pages[i].v_address, p->p_pages[i].swapfile_offset);  
-        //   }
-        // }
-  //        printf("ram count %d\n", p->in_ram_count);
           int free_offset = get_free_swapfile_offset();
           if(free_offset != -1)
             swap_out(free_offset);
           else
             panic("Swapfile is full");
         }
-        if(p->p_pages[i].in_ram == 0){
+        pte_t *pte = walk(p->pagetable,va, 0);
+        if(*pte & PTE_PG){
           char * p_address = kalloc();
           memset(p_address, 0, PGSIZE);
-         // printf("p_Address1 %p virutal address %p\n", p_address, va);
           p->p_pages[i].v_address = va;
           p->p_pages[i].in_ram = 1; 
           p->p_pages[i].allocated = 1;
@@ -101,6 +94,7 @@ usertrap(void)
           #endif
           p->sc_fifo_queue[p->in_ram_count] = i;
           p->in_ram_count++;
+          p->total_pages_in_swapfile--;
           // sfence_vma();
           if(mappages(p->pagetable, p->p_pages[i].v_address, PGSIZE, (uint64)p_address, PTE_W|PTE_X|PTE_R|PTE_U) < 0) {
             printf("mapping out of memory\n");
@@ -108,21 +102,16 @@ usertrap(void)
             return;
           }
           readFromSwapFile(p, p_address, p->p_pages[i].swapfile_offset,PGSIZE);
-          pte_t *pte = walk(p->pagetable,va, 0);
           *pte |= PTE_V; // turning on valid flag
           *pte &= ~(PTE_PG); // turning off secondary storage flag
+           p->swapFile_offset[(int)(p->p_pages[i].swapfile_offset/PGSIZE)] = 1;
+           p->p_pages[i].swapfile_offset = -1;
 
         }
         else {
           printf("v address %p, in ram ? %d\n",p->p_pages[i].v_address, p->p_pages[i].in_ram);
           panic("Page does not exists");
         }
-        p->swapFile_offset[(int)(p->p_pages[i].swapfile_offset/PGSIZE)] = 1;
-        p->p_pages[i].swapfile_offset = -1;
-        //char* pa = (char*)walkaddr(p->pagetable, va);
-      //  printf("starting to read va %p\n", va);
-        //readFromSwapFile(p, pa, p->p_pages[i].swapfile_offset,PGSIZE);
-        //printf("finished to read \n");
 
         found_page_address = 1;
 
@@ -207,7 +196,6 @@ usertrapret(void)
 void 
 kerneltrap()
 {
-  struct proc* p = myproc();
   int which_dev = 0;
   uint64 sepc = r_sepc();
   uint64 sstatus = r_sstatus();
@@ -218,11 +206,7 @@ kerneltrap()
   if(intr_get() != 0)
     panic("kerneltrap: interrupts enabled");
 
-  if((which_dev = devintr()) == 0){
-      for(int i = 0; i < MAX_TOTAL_PAGES;i++){
-         printf("Virtual address in swap file %p offset %d inram? %d\n", p->p_pages[i].v_address, p->p_pages[i].swapfile_offset, p->p_pages[i].in_ram);  
-      }
-                  
+  if((which_dev = devintr()) == 0){              
     printf("scause %p\n", scause);
     printf("sepc=%p stval=%p\n", r_sepc(), r_stval());
     panic("kerneltrap");

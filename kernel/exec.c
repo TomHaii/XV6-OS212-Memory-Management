@@ -37,7 +37,15 @@ exec(char *path, char **argv)
 
   if((pagetable = proc_pagetable(p)) == 0)
     goto bad;
-
+  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO) || defined(AQ))
+    init_page_struct(p);
+    if(p->pid > 2){
+      if(p->total_pages_in_swapfile != 0){
+      removeSwapFile(p);
+      createSwapFile(p);
+      }
+    }
+  #endif
   // Load program into memory.
   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
     if(readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph))
@@ -114,12 +122,7 @@ exec(char *path, char **argv)
   p->sz = sz;
   p->trapframe->epc = elf.entry;  // initial program counter = main
   p->trapframe->sp = sp; // initial stack pointer
-  // #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO) || defined(AQ))
-  //   if(p->pid > 2){
-  //     removeSwapFile(p);
-  //     createSwapFile(p);
-  //   }
-  // #endif
+
   proc_freepagetable(oldpagetable, oldsz);
 
   return argc; // this ends up in a0, the first argument to main(argc, argv)
