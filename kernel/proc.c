@@ -193,18 +193,19 @@ uint select_page_LAPA(){
 
 uint select_page_NFUA(){
     struct proc *p = myproc();
-    int min_used = -1;
+    int min_used = p->p_pages[0].age;
     int is_first = 0;
     int min_page_index = 0;
     for(int i=0 ; i<MAX_TOTAL_PAGES ; i++){
       if(p->p_pages[i].in_ram){
-        if(!is_first || p->p_pages[i].age <= min_used){
+        if(!is_first || p->p_pages[i].age < min_used){
           min_used = p->p_pages[i].age;
           min_page_index = i;
           is_first = 1;
         }
       }
     }
+    printf("v address %p\n",p->p_pages[min_page_index].v_address);
     return p->p_pages[min_page_index].v_address;
 }
 
@@ -216,7 +217,7 @@ uint select_page_SCFIFO(){
       if(p->p_pages[p->sc_fifo_queue[0]].sc_used) {
         p->p_pages[p->sc_fifo_queue[0]].sc_used = 0;
         int curr = p->sc_fifo_queue[0];
-        for(int j=1; j< p->in_ram_count ; j++){
+        for(int j=1; j< MAX_PYSC_PAGES ; j++){
           p->sc_fifo_queue[j-1] = p->sc_fifo_queue[j];
         }
         p->sc_fifo_queue[p->in_ram_count-1] = curr;
@@ -226,6 +227,7 @@ uint select_page_SCFIFO(){
         index_page_to_swap=p->sc_fifo_queue[0];
       }
     }
+      printf("v address %p\n",p->p_pages[index_page_to_swap].v_address);
       return p->p_pages[index_page_to_swap].v_address;
 
 }
@@ -303,6 +305,7 @@ proc_pagetable(struct proc *p)
 void
 proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
+
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
@@ -344,7 +347,7 @@ userinit(void)
   p->state = RUNNABLE;
 
   release(&p->lock);
-}
+} 
 
 // Grow or shrink user memory by n bytes.
 // Return 0 on success, -1 on failure.
@@ -379,14 +382,12 @@ fork(void)
   if((np = allocproc()) == 0){
     return -1;
   }
-  printf("copy user memory form parent to child\n");
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;
   }
-  printf("finihsed copy parent memory to child\n");
   np->sz = p->sz;
 
   // copy saved user registers.
@@ -408,7 +409,6 @@ fork(void)
   release(&np->lock);
   #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
   if(np->pid > 2){
-    printf("Creating swapfile in in fork\n");
     createSwapFile(np);
     //np->swapfile_offset = p->swapfile_offset;
     np->total_pages_in_swapfile = p->total_pages_in_swapfile;
@@ -419,21 +419,20 @@ fork(void)
       np->p_pages[i].allocated = p->p_pages[i].allocated;
       np->p_pages[i].in_ram = p->p_pages[i].in_ram;
     }
-    printf("Starting to copy swapfile in fork\n");
     char* page_to_dup = kalloc();
-    for(int j = 0; j < p->total_pages_in_swapfile; j++){
-      uint offset = j*PGSIZE;
-      printf("start reading at offset %d\n", offset);
-      readFromSwapFile(p, page_to_dup, offset, PGSIZE);
-      printf("finished reading at offset %d\n", offset);
-      printf("started writing at offset %d\n", offset);
-      writeToSwapFile(np, page_to_dup, offset, PGSIZE);
-      printf("finished writing at offset %d\n", offset);
+    for(int j = 0; j < MAX_PYSC_PAGES; j++){
+      if(p->swapFile_offset[j] == 0){
+        uint offset = j*PGSIZE;
+        readFromSwapFile(p, page_to_dup, offset, PGSIZE);
+        writeToSwapFile(np, page_to_dup, offset, PGSIZE);
+        memset((void*)page_to_dup, 0, PGSIZE);
+      }
     }
     for(int i = 0; i< MAX_PYSC_PAGES; i++){
       np->swapFile_offset[i] = p->swapFile_offset[i];
       np->sc_fifo_queue[i] = p->sc_fifo_queue[i];
     }
+    printf("Cleaning physical address1 %p\n", page_to_dup);
     kfree(page_to_dup);
   }
   #endif
@@ -588,6 +587,9 @@ scheduler(void)
         #if (defined(SCFIFO))
         sc_used_helper();
         #endif
+        #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
+        turn_off_PTE_A();
+        #endif
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
@@ -660,9 +662,7 @@ sched(void)
   if(intr_get())
     panic("sched interruptible");
 
-  // #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
-  // turn_off_PTE_A();
-  // #endif
+
   intena = mycpu()->intena;
   swtch(&p->context, &mycpu()->context);
   mycpu()->intena = intena;
