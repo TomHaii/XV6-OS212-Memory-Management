@@ -37,7 +37,7 @@ exec(char *path, char **argv)
 
   if((pagetable = proc_pagetable(p)) == 0)
     goto bad;
-  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO) || defined(AQ))
+  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
     init_page_struct(p);
     if(p->pid > 2){
       if(p->total_pages_in_swapfile != 0){

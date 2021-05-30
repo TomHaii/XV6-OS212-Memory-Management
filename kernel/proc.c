@@ -145,7 +145,7 @@ found:
     p->p_pages[i].in_ram = 0;
     p->p_pages[i].allocated = 0;
     p->p_pages[i].sc_used = 0;
-    #if (defined(LAPA))
+    #ifdef LAPA
     p->p_pages[i].age = 0xFFFFFFFF;
     #else
     p->p_pages[i].age = 0;
@@ -165,7 +165,7 @@ found:
   return p;
 }
 
-uint select_page_LAPA(){
+uint64 select_page_LAPA(){
   
     struct proc *p = myproc();
     // for(int i = 0;i < MAX_TOTAL_PAGES;i++){
@@ -174,9 +174,9 @@ uint select_page_LAPA(){
     //   }
     // }
     // printf("\n");
-    int min_ones = 33;
-    int ones_counter = 0;
-    int min_ones_index = 0;
+    uint min_ones = 33;
+    uint ones_counter = 0;
+    uint min_ones_index = 0;
     for(int i = 0;i < MAX_TOTAL_PAGES;i++){
       if(p->p_pages[i].in_ram){
         ones_counter=0;
@@ -184,46 +184,46 @@ uint select_page_LAPA(){
           if((p->p_pages[i].age >> j) & 1)
             ones_counter++;
         }
+     //   printf("LAPA: VA = %p, ONES COUNTER= %d, AGE =%d\n",p->p_pages[i].v_address, ones_counter, p->p_pages[i].age);
         if(ones_counter < min_ones){
           min_ones_index = i;
           min_ones = ones_counter;
         } else if(ones_counter == min_ones ){
-            if(p->p_pages[i].age <= p->p_pages[min_ones_index].age){
+            if(p->p_pages[i].age < p->p_pages[min_ones_index].age){
               min_ones_index = i;
               min_ones = ones_counter;
             }
         }
       }
     }
-   // printf("selected min index %d v address %p\n",min_ones_index,p->p_pages[min_ones_index].v_address);
+  //  printf("selected min index %d v address %p\n",min_ones_index,p->p_pages[min_ones_index].v_address);
     return p->p_pages[min_ones_index].v_address;
 }
 
-uint select_page_NFUA(){
+uint64 select_page_NFUA(){
     struct proc *p = myproc();
     // for(int i = 0;i < MAX_TOTAL_PAGES;i++){
-    //   if(p->p_pages[i].in_ram){
-    //     printf("va %d, age %d\n",p->p_pages[i].v_address,p->p_pages[i].age);
-    //   }
+    //   //if(p->p_pages[i].in_ram){
+    //     printf("va %p, age %d in ram? %d\n",p->p_pages[i].v_address,p->p_pages[i].age, p->p_pages[i].in_ram);
+    //  // }
     // }
-//   printf("\n");
-    int min_used = 0;
+    uint min_used = 0;
     int is_first = 0;
     int min_page_index = 0;
     for(int i=0 ; i<MAX_TOTAL_PAGES ; i++){
       if(p->p_pages[i].in_ram){
-        if(!is_first || p->p_pages[i].age <= min_used){
+        if(!is_first || p->p_pages[i].age < min_used){
           min_used = p->p_pages[i].age;
           min_page_index = i;
           is_first = 1;
         }
       }
     }
-   // printf("selected min index %d v address %p\n",min_page_index,p->p_pages[min_page_index].v_address);
+    //printf("selected min index %d v address %p\n",min_page_index,p->p_pages[min_page_index].v_address);
     return p->p_pages[min_page_index].v_address;
 }
 
-uint select_page_SCFIFO(){
+uint64 select_page_SCFIFO(){
     struct proc *p = myproc();
     // for(int i = 0;i < MAX_PYSC_PAGES;i++){
     //     printf("va %p, queue index %d second? %d in ram ? %d\n",p->p_pages[p->sc_fifo_queue[i]].v_address,i,p->p_pages[p->sc_fifo_queue[i]].sc_used,p->p_pages[p->sc_fifo_queue[i]].in_ram);
@@ -266,11 +266,15 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   for(int i = 0; i < MAX_TOTAL_PAGES; i++){
-    p->p_pages[i].v_address = 0;
-    p->p_pages[i].swapfile_offset = 0;
+    p->p_pages[i].v_address = -1;
+    p->p_pages[i].swapfile_offset = -1;
     p->p_pages[i].in_ram = 0;
     p->p_pages[i].swapped = 0;
     p->p_pages[i].allocated = 0;
+  }
+  for(int i = 0; i < MAX_PYSC_PAGES; i++){
+    p->swapFile_offset[i] = 1;
+    p->sc_fifo_queue[i] = 0;
   }
   p->in_ram_count = 0;
   p->total_pages_in_swapfile = 0;
@@ -425,10 +429,11 @@ fork(void)
   pid = np->pid;
 
   release(&np->lock);
-  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
+  #ifndef NONE
   if(np->pid > 2){
     createSwapFile(np);
     //np->swapfile_offset = p->swapfile_offset;
+    np->in_ram_count = p->in_ram_count;
     np->total_pages_in_swapfile = p->total_pages_in_swapfile;
     for(int i = 0; i < MAX_TOTAL_PAGES; i++){
       np->p_pages[i].v_address = p->p_pages[i].v_address;
@@ -563,6 +568,7 @@ wait(uint64 addr)
   acquire(&wait_lock);
 
   for(;;){
+
     // Scan through table looking for exited children.
     havekids = 0;
     for(np = proc; np < &proc[NPROC]; np++){
@@ -619,24 +625,26 @@ scheduler(void)
     intr_on();
 
     for(p = proc; p < &proc[NPROC]; p++) {
+
       acquire(&p->lock);
       if(p->state == RUNNABLE) {
+
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        #ifdef SCFIFO
+        sc_used_helper();
+        #endif
         #if (defined(NFUA) || defined(LAPA))
         age_helper();
         #endif
-        #if (defined(SCFIFO))
-        sc_used_helper();
-        #endif
-        #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
-        turn_off_PTE_A();
-        #endif
         swtch(&c->context, &p->context);
-
+        // #ifndef NONE
+        // turn_off_PTE_A();
+        // #endif
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
@@ -652,7 +660,7 @@ void turn_off_PTE_A(){
   struct proc* p = myproc();
   for(int i = 0; i < MAX_TOTAL_PAGES; i++){
       if(p->pid > 2 && p->p_pages[i].in_ram){
-        pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, 1);
+        pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, 0);
         *pte &= ~(PTE_A);
      }
   }
@@ -663,9 +671,10 @@ void sc_used_helper(){
   struct proc* p = myproc();
     for(int i = 0; i < MAX_TOTAL_PAGES; i++){
     if(p->p_pages[i].in_ram){
-      pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, 1);
+      pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, 0);
       if(*pte & PTE_A){
         p->p_pages[i].sc_used = 1;
+        *pte &= ~(PTE_A);
       }
     }
   }
@@ -673,16 +682,29 @@ void sc_used_helper(){
 
 
 void age_helper(){
+
   struct proc* p = myproc();
+    //     for(int i = 0;i < MAX_TOTAL_PAGES;i++){
+    //   //if(p->p_pages[i].in_ram){
+    //     printf("va %d, age %d\n",p->p_pages[i].v_address,p->p_pages[i].age);
+    //  // }
+    // }
   for(int i = 0; i < MAX_TOTAL_PAGES; i++){
     if(p->p_pages[i].in_ram){
-      pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, 1);
-      if(*pte & PTE_A)
-        p->p_pages[i].age = (p->p_pages[i].age >> 1) | 0x80000000;
-      else
-        p->p_pages[i].age = (p->p_pages[i].age >> 1) & ~(0x80000000);
+      pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, 0);
+      p->p_pages[i].age >>= 1;
+      if(*pte & PTE_A){
+        p->p_pages[i].age |= 0x80000000;
+      //  printf("AGE HELPER va %d, age %d\n",p->p_pages[i].v_address,p->p_pages[i].age);
+        *pte &= ~(PTE_A);
+      }
+       else {
+          p->p_pages[i].age &= ~(0x80000000);
+       }
+   //   printf("v address %p, age value %d\n", p->p_pages[i].v_address, p->p_pages[i].age);
     }
   }
+ // printf("**************************done aging************************\n");
 } 
 
 // Switch to scheduler.  Must hold only p->lock
@@ -717,6 +739,7 @@ sched(void)
 void
 yield(void)
 {
+
   struct proc *p = myproc();
   acquire(&p->lock);
   p->state = RUNNABLE;

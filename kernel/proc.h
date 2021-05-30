@@ -83,7 +83,7 @@ struct trapframe {
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 struct page {
-  uint v_address;
+  uint64 v_address;
   uint swapfile_offset;
   int in_ram;
   int swapped;

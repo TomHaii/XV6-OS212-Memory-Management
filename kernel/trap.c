@@ -68,11 +68,11 @@ usertrap(void)
   #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
   //page fault
   else if(r_scause() == 13 || r_scause() == 15 || r_scause() == 12){
-    uint va = PGROUNDDOWN(r_stval());
+    uint64 va = PGROUNDDOWN(r_stval());
+    printf("User pagefault at %p\n", va);
     int found_page_address = 0;
     for(int i = 0; i < MAX_TOTAL_PAGES; i++){
       if(p->p_pages[i].v_address == va){
-
         if(p->in_ram_count == MAX_PYSC_PAGES){
           int free_offset = get_free_swapfile_offset();
           if(free_offset != -1)
@@ -227,6 +227,7 @@ clockintr()
 {
   acquire(&tickslock);
   ticks++;
+
   wakeup(&ticks);
   release(&tickslock);
 }

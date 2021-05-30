@@ -205,7 +205,6 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
         p->p_pages[i].age = 0;
         p->p_pages[i].sc_used = 0;
         p->in_ram_count--;
-        *pte |= PTE_PG; // turning on secondary storage flag
         *pte &= ~(PTE_V); // turning off valid flag
         }
         uint64 pa = PTE2PA(*pte);
@@ -260,7 +259,7 @@ uvminit(pagetable_t pagetable, uchar *src, uint sz)
 uint64
 uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 {
-  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
+  #ifndef NONE
   struct proc* p = myproc();
   #endif
   char *mem;
@@ -273,7 +272,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 
     #ifndef NONE
     //check if we exceeded the max page size
-     if((p->pid > 2) && (p->in_ram_count >= MAX_PYSC_PAGES)){
+     if((p->pid > 2) && (p->in_ram_count >= MAX_PYSC_PAGES) && p->pagetable == pagetable){
      // if((p->pid > 2) && (a >= PGSIZE*MAX_PYSC_PAGES)){
         int free_offset = get_free_swapfile_offset();
         if(free_offset == -1){
@@ -294,20 +293,29 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
       uvmdealloc(pagetable, a, oldsz);
       return 0;
     }
-    #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
-    if(p->pid > 2)
+    #ifndef NONE
+    if(p->pid > 2 && p->pagetable == pagetable)
     {
       int page_index = 0;
       //We didn't find a page in ram with the same virtual address as a
-      while((page_index < MAX_TOTAL_PAGES) && (p->p_pages[page_index].v_address != -1)){
-          page_index++;
-      }
-      if(page_index >= MAX_TOTAL_PAGES)
+        while((page_index < MAX_TOTAL_PAGES) && (p->p_pages[page_index].v_address != -1)){
+           page_index++;
+        }
+      //We didn't find a page in ram with the same virtual address as a
+      // while((page_index < MAX_TOTAL_PAGES) && (p->p_pages[page_index].v_address != -1)){
+      //     page_index++;
+      // }
+
+      if(page_index >= MAX_TOTAL_PAGES){
+        for(int i = 0; i < MAX_TOTAL_PAGES; i++){
+          printf("Index %d, VA %p, IN RAM? %d\n", i,p->p_pages[i].v_address, p->p_pages[i].in_ram);
+        }
         panic("Exceeded number of total pages");
+      }
       p->p_pages[page_index].v_address = PGROUNDDOWN(a);
       p->p_pages[page_index].in_ram = 1; 
       p->p_pages[page_index].allocated = 1;
-      #if (defined(LAPA))
+      #ifdef LAPA
       p->p_pages[page_index].age = 0xFFFFFFFF;
       #else
       p->p_pages[page_index].age = 0;
@@ -315,6 +323,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
       p->p_pages[page_index].swapfile_offset = -1;
       p->sc_fifo_queue[p->in_ram_count] = page_index;
       p->in_ram_count++;
+     // printf("initalizing va %p at index %d\n", p->p_pages[page_index].v_address, page_index);
       pte_t *pte = walk(p->pagetable, p->p_pages[page_index].v_address, p->p_pages[page_index].allocated);
       *pte &= ~(PTE_PG); // turning off secondary storage flag
       *pte |= PTE_V; // turning on valid flag
@@ -353,14 +362,14 @@ int get_free_swapfile_offset(){
 }
 
 
-void swap_out(uint offset){
+uint64 swap_out(uint offset){
   struct proc* p = myproc();
  // pte_t *pte;
-  uint address_to_write_from = select_page();
+  uint64 address_to_write_from = select_page();
   address_to_write_from = PGROUNDDOWN(address_to_write_from);
   pte_t *ptet = walk(p->pagetable, address_to_write_from, 0);
   char* pa = (char*)PTE2PA(*ptet);
- // printf("pid %d, start write to swap file - offset %d address - %p , physical %p\n",p->pid,offset, address_to_write_from, pa);
+  printf("pid %d, start write to swap file - offset %d address - %p , physical %p\n",p->pid,offset, address_to_write_from, pa);
   writeToSwapFile(p, pa, offset, PGSIZE); // write the page in the free space in the swap file
   int page_index = 0;
   // get the page address we want to swap
@@ -375,13 +384,13 @@ void swap_out(uint offset){
   p->p_pages[page_index].in_ram = 0;
   p->p_pages[page_index].allocated = 0;
   p->in_ram_count--;
-  p->total_pages_in_swapfile++;
   
   
   *ptet |= PTE_PG; // turning on secondary storage flag
   *ptet &= ~(PTE_V); // turning off valid flag
   kfree((void*)(pa));
   sfence_vma();
+  return address_to_write_from;
 }
 
 // Deallocate user pages to bring the process size from oldsz to

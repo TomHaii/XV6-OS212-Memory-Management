@@ -111,10 +111,11 @@ void            yield(void);
 int             either_copyout(int user_dst, uint64 dst, void *src, uint64 len);
 int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
-uint            select_page_NFUA();
-uint            select_page_LAPA();
-uint            select_page_SCFIFO();
+uint64            select_page_NFUA();
+uint64            select_page_LAPA();
+uint64            select_page_SCFIFO();
 void            turn_off_PTE_A();
+void            age_helper();
 // swtch.S
 void            swtch(struct context*, struct context*);
 
@@ -185,7 +186,7 @@ pte_t *         walk(pagetable_t, uint64, int);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
-void            swap_out(uint);
+uint64          swap_out(uint);
 int            get_free_swapfile_offset();
 
 // plic.c
