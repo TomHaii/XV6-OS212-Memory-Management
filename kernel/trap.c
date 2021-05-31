@@ -65,14 +65,14 @@ usertrap(void)
 
     syscall();
   }
-  #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
   //page fault
   else if(r_scause() == 13 || r_scause() == 15 || r_scause() == 12){
     uint64 va = PGROUNDDOWN(r_stval());
-    printf("User pagefault at %p\n", va);
+    #ifndef NONE
     int found_page_address = 0;
     for(int i = 0; i < MAX_TOTAL_PAGES; i++){
       if(p->p_pages[i].v_address == va){
+       printf("User pagefault at %p\n", va);
         if(p->in_ram_count == MAX_PYSC_PAGES){
           int free_offset = get_free_swapfile_offset();
           if(free_offset != -1)
@@ -95,7 +95,6 @@ usertrap(void)
           p->sc_fifo_queue[p->in_ram_count] = i;
           p->in_ram_count++;
           p->total_pages_in_swapfile--;
-          // sfence_vma();
           if(mappages(p->pagetable, p->p_pages[i].v_address, PGSIZE, (uint64)p_address, PTE_W|PTE_X|PTE_R|PTE_U) < 0) {
             printf("mapping out of memory\n");
             kfree(p_address);
@@ -114,11 +113,6 @@ usertrap(void)
         }
 
         found_page_address = 1;
-
-
-        // pte_t *pte = walk(p->pagetable, p->p_pages[i].v_address, p->p_pages[i].allocated);
-        // *pte &= ~(PTE_PG); // turning off secondary storage flag
-        // *pte |= PTE_V; // turning on valid flag
         break;
       }
     }
@@ -126,8 +120,28 @@ usertrap(void)
         printf("va %p\n", va);
         panic("Illegal address in pagefault");
     }
-  }
+    #endif
+    #ifdef NONE
+    if(p->killed == 0){
+      
+      if(va <= p->sz){
+        if((uvmalloc(p->pagetable, va, va + PGSIZE)) == 0){
+        panic("Lazy allocation: could not allocate memory");
+        }
+      } else {
+          // printf("usertrap(): unexpected pagefault pid=%d\n", p->pid);
+          // printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+          // printf("Segmentation fault\n");
+          exit(-1);
+      }
+    }
+    else {
+      //process is dead
+      exit(-1);
+    }
   #endif
+
+  }
   else if((which_dev = devintr()) != 0){
     // ok
   }

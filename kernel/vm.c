@@ -179,13 +179,28 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
         break;
       }
     }
-    if(i == -1)
-      panic("uvmunmap: no such VA");
-    if((pte = walk(pagetable, a, 0)) == 0)
+    // if(i == -1)
+    //   panic("uvmunmap: no such VA");
+    
+    if((pte = walk(pagetable, a, 0)) == 0){
+      #ifdef NONE
+      return;
+      #endif
       panic("uvmunmap: walk");
-    if(((*pte & PTE_V) == 0) && ((*pte & PTE_PG) == 0)){
-      panic("uvmunmap: not mapped");
+    
     }
+    if(((*pte & PTE_V) == 0) && ((*pte & PTE_PG) == 0)){
+      #ifndef NONE
+      panic("uvmunmap: not mapped");
+      #endif
+    }
+    #ifdef NONE
+    if(do_free && (*pte & PTE_V)){
+      uint64 pa = PTE2PA(*pte);
+      kfree((void*)pa);
+    }
+    #endif
+    #ifndef NONE
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(!(*pte & PTE_PG)){
@@ -221,6 +236,7 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       p->total_pages_in_swapfile++;
       }
     }
+    #endif
     *pte = 0;
   }
 }
@@ -259,9 +275,7 @@ uvminit(pagetable_t pagetable, uchar *src, uint sz)
 uint64
 uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 {
-  #ifndef NONE
   struct proc* p = myproc();
-  #endif
   char *mem;
   uint64 a;
   if(newsz < oldsz)
@@ -330,6 +344,9 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
     }
     #endif
   }
+  #ifdef NONE
+  p->lazy_sz = newsz;
+  #endif
   return newsz;
 }
 
@@ -369,7 +386,7 @@ uint64 swap_out(uint offset){
   address_to_write_from = PGROUNDDOWN(address_to_write_from);
   pte_t *ptet = walk(p->pagetable, address_to_write_from, 0);
   char* pa = (char*)PTE2PA(*ptet);
-  printf("pid %d, start write to swap file - offset %d address - %p , physical %p\n",p->pid,offset, address_to_write_from, pa);
+ // printf("pid %d, start write to swap file - offset %d address - %p , physical %p\n",p->pid,offset, address_to_write_from, pa);
   writeToSwapFile(p, pa, offset, PGSIZE); // write the page in the free space in the swap file
   int page_index = 0;
   // get the page address we want to swap
@@ -401,15 +418,19 @@ uint64
 uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 {
   
+  // #ifdef NONE
+  // struct proc* p = myproc();
+  // #endif
   if(newsz >= oldsz)
     return oldsz;
 
   if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
     int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
-
     uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
   }
-
+  // #ifdef NONE
+  // p->lazy_sz = newsz;
+  // #endif
   return newsz;
 }
 
@@ -427,7 +448,9 @@ freewalk(pagetable_t pagetable)
       freewalk((pagetable_t)child);
       pagetable[i] = 0;
     } else if(pte & PTE_V){
+      #ifndef NONE
       panic("freewalk: leaf");
+      #endif
     }
   }
   kfree((void*)pagetable);
@@ -455,25 +478,34 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   
   pte_t *pte;
+  #ifndef NONE
   pte_t *np_pte;
+  #endif
   uint64 pa, i;
   uint flags;
   char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
+    if((pte = walk(old, i, 0)) == 0){
+      #ifndef NONE
       panic("uvmcopy: pte should exist");
+      #endif
+      return 0;
+    }
     if(!(*pte & PTE_V) && !(*pte && PTE_PG)){
+      #ifndef NONE
       panic("uvmcopy: page not present and not on disk");
+      #endif
+      return 0;
     }  
-    #if(defined(NFUA) || defined(LAPA) || defined(SCFIFO))
+    #ifndef NONE
     if(*pte & PTE_PG){  // paged swapped out be we still want to copy entry {
       if((np_pte = walk(new, i, 1)) == 0)
         return -1;
     *np_pte = *pte;
     continue;
-    #endif
     }
+    #endif
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -486,7 +518,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   }
   return 0;
 
- err:
+  err:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }

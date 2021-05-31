@@ -123,6 +123,7 @@ struct proc {
   int sc_fifo_queue[MAX_PYSC_PAGES];
   int swapFile_offset[MAX_PYSC_PAGES];
   uint swapfile_offset;
-  
+  uint64 lazy_sz;
+
 
 };

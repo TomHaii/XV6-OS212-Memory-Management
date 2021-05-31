@@ -151,6 +151,7 @@ found:
     p->p_pages[i].age = 0;
     #endif
   }
+  p->lazy_sz = 0;
   for(int i = 0; i < MAX_PYSC_PAGES; i++){
     p->swapFile_offset[i] = 1;
     p->sc_fifo_queue[i] = 0;
@@ -184,7 +185,7 @@ uint64 select_page_LAPA(){
           if((p->p_pages[i].age >> j) & 1)
             ones_counter++;
         }
-     //   printf("LAPA: VA = %p, ONES COUNTER= %d, AGE =%d\n",p->p_pages[i].v_address, ones_counter, p->p_pages[i].age);
+       // printf("LAPA: VA = %p, ONES COUNTER= %d, AGE =%d\n",p->p_pages[i].v_address, ones_counter, p->p_pages[i].age);
         if(ones_counter < min_ones){
           min_ones_index = i;
           min_ones = ones_counter;
@@ -280,6 +281,7 @@ freeproc(struct proc *p)
   p->total_pages_in_swapfile = 0;
   p->pagetable = 0;
   p->sz = 0;
+  p->lazy_sz = 0;
   p->pid = 0;
   p->parent = 0;
   p->name[0] = 0;
@@ -358,7 +360,7 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
-
+  
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -380,6 +382,8 @@ growproc(int n)
   struct proc *p = myproc();
 
   sz = p->sz;
+
+  #ifndef NONE
   if(n > 0){
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
@@ -387,7 +391,19 @@ growproc(int n)
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
+  #endif
+  
+  #ifdef NONE
+  if(n < 0) {
+      sz = uvmdealloc(p->pagetable, sz, sz + n);
+      //  sz = p->lazy_sz;
+  }
+  else
+    sz = p->sz + n;
+  #endif
+
   p->sz = sz;
+ // printf("n value %d, size %p\n", n, sz);
   return 0;
 }
 
@@ -429,6 +445,9 @@ fork(void)
   pid = np->pid;
 
   release(&np->lock);
+  #ifdef NONE
+  np->lazy_sz = p->lazy_sz;
+  #endif
   #ifndef NONE
   if(np->pid > 2){
     createSwapFile(np);
@@ -692,7 +711,7 @@ void age_helper(){
   for(int i = 0; i < MAX_TOTAL_PAGES; i++){
     if(p->p_pages[i].in_ram){
       pte_t* pte = walk(p->pagetable, p->p_pages[i].v_address, 0);
-      p->p_pages[i].age >>= 1;
+      p->p_pages[i].age = (p->p_pages[i].age >> 1);
       if(*pte & PTE_A){
         p->p_pages[i].age |= 0x80000000;
       //  printf("AGE HELPER va %d, age %d\n",p->p_pages[i].v_address,p->p_pages[i].age);

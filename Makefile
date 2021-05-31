@@ -137,7 +137,6 @@ UPROGS=\
 	$U/_wc\
 	$U/_zombie\
 	$U/_lazytests\
-	$U/_pagetests\
 	$U/_ass3SanityTests\
 
 fs.img: mkfs/mkfs README $(UPROGS)
